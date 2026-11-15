@@ -25,6 +25,8 @@ urgent than it already was.
 
 ## What it does
 
+![Two panels on one core: without the plugin the worker inherits the parent's nice and competes on equal terms; with it the worker is reniced -5 to +10 and yields to the process serving the connection](docs/images/banner.png)
+
 Every two seconds, in the Hermes process that loaded it:
 
 1. finds processes owned by the same user whose command line contains
