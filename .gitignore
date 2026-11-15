@@ -1,0 +1,12 @@
+# Artefacts d'exécution Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Outils et environnements locaux
+.pytest_cache/
+.venv/
+
+# État d'orchestration local
+.orchestrator/
+.opencode/
