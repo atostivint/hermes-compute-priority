@@ -38,6 +38,16 @@ Every two seconds, in the Hermes process that loaded it:
 It does nothing else. On a host where turn isolation is off, no worker of that shape exists, so the
 plugin is a no-op.
 
+## How scheduling priority works
+
+Priority makes nothing faster: it decides **who yields** when two processes want the same core. POSIX
+calls that number `nice` — `-20` to `19`, a larger value meaning less CPU — and Windows uses a
+per-process priority class instead, which the plugin maps explicitly. The catch is inheritance: a
+child starts at its parent's nice, so a systemd unit cannot separate the two, and the child has to be
+lowered *after* it starts. [How scheduling priorities work](docs/priority.md) covers the two layers
+(cgroup `CPUWeight` between units, nice between processes), which operation needs a privilege on each
+platform, and what this plugin deliberately leaves alone.
+
 ## What it does not do
 
 - It does **not** speed up turns: work handed to a worker still costs the same CPU, it just yields
