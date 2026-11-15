@@ -1,0 +1,21 @@
+# hermes-compute-priority: keeps the process that serves the Desktop's WebSocket ahead of the
+# turn workers it spawns.
+#
+# Hermes can run agent turns in a child process (`dashboard.turn_isolation`). That child inherits
+# the serving process's niceness, so on a busy machine it competes with it on equal terms: the
+# WebSocket starts answering late, the Desktop gives up on its 15 s budget and shows
+# "disconnected" while the backend is alive. This plugin raises the worker's niceness shortly
+# after it appears, which configuration cannot do (a systemd drop-in applies to the whole unit,
+# children included).
+name: hermes-compute-priority
+id: hermes-compute-priority
+kind: standalone
+version: 0.1.0
+requires_hermes: ">=0.22"
+description: >
+  Raises the scheduling priority gap between the Hermes process that serves a connection and the
+  child process that runs isolated agent turns: every `tui_gateway.compute_host` worker owned by
+  the same user is reniced to +10 within two seconds of appearing. Nothing else is touched, no
+  privilege is used (raising niceness of an owned process needs none), and the plugin is a no-op
+  on hosts where turn isolation is off.
+provides: []
