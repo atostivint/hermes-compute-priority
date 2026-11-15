@@ -101,11 +101,12 @@ def test_the_backend_module_exposes_the_router_that_hermes_mounts(manifest, monk
     try:
         import fastapi
     except ImportError:
-        # router is None where FastAPI is absent (the module builds it lazily). Hermes always has
-        # FastAPI, so assert the route only where we can.
+        # router is None where FastAPI is absent (the module builds it lazily). CI installs
+        # fastapi, so the real assertion below runs there; a workstation without it skips.
         pytest.skip("fastapi is not installed here; router is None by design without it")
     from fastapi import APIRouter
 
+    assert module.router is not None, "with fastapi installed, plugin_api.py must build a router"
     assert isinstance(module.router, APIRouter)
     # APIRoute keeps the decorator's path verbatim, leading slash included: starlette's
     # Route.__init__ asserts path.startswith("/") and assigns self.path = path.

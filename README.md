@@ -136,21 +136,28 @@ The worker should appear at niceness `10` within a couple of seconds of starting
 serving process keeps its own value. The plugin also answers a read-only route:
 
 ```bash
-curl -u "$DASHBOARD_USER:$DASHBOARD_PASSWORD" \
+# the deployment's session token, or a Bearer token from the auth flow
+curl -H "X-Hermes-Session-Token: $HERMES_DASHBOARD_SESSION_TOKEN" \
   http://127.0.0.1:<dashboard port>/api/plugins/hermes-compute-priority/status
 ```
 
 which reports the target, the scan count, the workers reniced so far, and the last error if any.
 
-The `-u` is not optional once an auth provider is configured. Nothing under `/api/plugins/` is on
-the dashboard's public allowlist, so a credential-less request is stopped by the gate — `401
-{"error": "unauthenticated", "detail": "Unauthorized", ...}` with `dashboard.basic_auth`, a
-`/login` redirect for other providers — and never reaches the plugin. A 401 therefore says nothing
-about whether the plugin loaded. Two proofs need no credentials at all:
+The route sits behind the dashboard's auth gate: nothing under `/api/plugins/` is on the public
+allowlist, so a credential-less request gets `401 {"error": "unauthenticated", "detail":
+"Unauthorized", ...}` from the gate and never reaches the plugin — a 401 therefore says nothing
+about whether the plugin loaded. `dashboard.basic_auth` is a *form* provider (the password is
+POSTed to `/auth/password-login`); there is no HTTP Basic, so `curl -u` with that username and
+password does not authenticate anything. The gate only reads `Authorization: Bearer <token>`, a
+session cookie, or `X-Hermes-Session-Token`, and on `/api/*` it always answers with the 401 JSON
+above — never a redirect.
+
+Two proofs need no credentials at all:
 
 ```bash
-# one line per worker reniced, written by the process that loaded the plugin
-journalctl -u hermes-dashboard | grep compute-priority
+# one line per worker reniced, from the plugin's own file log. The dashboard process installs
+# file handlers only and runs uvicorn with log_config=None, so nothing of this reaches the journal.
+grep compute-priority /var/lib/hermes-agent/.hermes/logs/agent.log
 
 # the plugin's scan thread, inside the serving process. comm is truncated to 15 characters,
 # so "compute-priority" (16) shows up as "compute-priorit".
