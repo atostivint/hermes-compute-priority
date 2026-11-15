@@ -29,6 +29,12 @@ plugin must not start deprioritising parts of someone else's Hermes without bein
 Everything here is pure and injectable: ``find_compute_hosts`` and ``find_by_rules`` read
 ``/proc``, and ``apply_once`` takes its scan and its setter as arguments, so tests never touch a
 real process.
+
+This module is the Linux mechanism and the shared algorithm. macOS and Windows have no ``/proc``
+and Windows has no 0–19 niceness scale, so the enumeration and the priority side live in
+``platform_backend.py``, which supplies ``apply_once`` with its callables. The public names below
+keep their meaning on every platform; the plugin's backend asks the platform layer which one to
+use.
 """
 
 from __future__ import annotations
@@ -230,6 +236,7 @@ def apply_once(
     nice_of: Callable[[int], int | None] = current_nice,
     setter: Callable[[int, int], bool] = set_nice,
     pid_exclude: int | None = None,
+    finder: Callable[[Sequence[Rule]], list[tuple[int, Rule]]] | None = None,
 ) -> list[Reniced]:
     """Renice every matched process that is still more urgent than its target.
 
@@ -238,10 +245,15 @@ def apply_once(
     already at or below its target is left alone, so repeating the call is free and the loop can
     run every couple of seconds without churning the scheduler. ``pid_exclude`` guards against
     ever touching this process.
+
+    ``finder`` is the only seam the platform layer needs: on macOS and Windows the worker list
+    comes from ``psutil``, not from ``/proc``, so ``platform_backend`` passes its own rule matcher
+    in. Omitted, the ``/proc`` one above is used and nothing changes.
     """
     if rules:
+        matcher = finder or (lambda declared: find_by_rules(declared, proc_root=proc_root))
         targets: list[tuple[int, int]] = [
-            (pid, rule.nice) for pid, rule in find_by_rules(rules, proc_root=proc_root)
+            (pid, rule.nice) for pid, rule in matcher(rules)
         ]
     else:
         scanner = scan or (lambda: find_compute_hosts(proc_root=proc_root))
