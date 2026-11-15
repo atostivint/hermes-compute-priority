@@ -8,9 +8,8 @@
 # after it appears, which configuration cannot do (a systemd drop-in applies to the whole unit,
 # children included).
 name: hermes-compute-priority
-id: hermes-compute-priority
 kind: standalone
-version: 0.3.1
+version: 0.3.2
 requires_hermes: ">=0.22"
 description: >
   Raises the scheduling priority gap between the Hermes process that serves a connection and the
@@ -23,4 +22,5 @@ description: >
   nothing else is touched unless asked. No privilege is used (lowering the priority of an owned
   process needs none), nothing is ever made more urgent, and the plugin is a no-op where turn
   isolation is off or where `psutil` is missing on macOS/Windows (the /status route says why).
-provides: []
+license: MIT
+homepage: https://github.com/atostivint/hermes-compute-priority
