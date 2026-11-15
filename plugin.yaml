@@ -10,7 +10,7 @@
 name: hermes-compute-priority
 id: hermes-compute-priority
 kind: standalone
-version: 0.2.0
+version: 0.2.1
 requires_hermes: ">=0.22"
 description: >
   Raises the scheduling priority gap between the Hermes process that serves a connection and the

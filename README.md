@@ -48,9 +48,22 @@ plugin is a no-op.
 
 ```bash
 hermes plugins install https://github.com/atostivint/hermes-compute-priority
+hermes plugins enable hermes-compute-priority
 ```
 
-Or copy the directory into `<HERMES_HOME>/plugins/hermes-compute-priority/` and restart the gateway.
+Or copy the directory into `<HERMES_HOME>/plugins/hermes-compute-priority/`, run
+`hermes plugins enable hermes-compute-priority`, and restart the gateway.
+
+`install` only *offers* to enable — it prompts, and a non-interactive run (CI, Docker, a piped
+script) leaves the plugin disabled. Hermes imports a user plugin's backend only when the plugin is
+listed in `plugins.enabled`, so the `enable` line is a required step, not a confirmation.
+
+The backend is reached through the dashboard, so the directory has to keep
+`dashboard/manifest.json` next to `dashboard/plugin_api.py`. The manifest is what tells the
+dashboard to import that file and mount its `router` at `/api/plugins/hermes-compute-priority/`;
+without it Hermes skips the plugin silently and the status route below does not exist at all.
+`tests/test_dashboard_manifest.py` fails if the manifest disappears or if its `version` drifts
+from `plugin.yaml`'s.
 
 Linux only: the scan reads `/proc` and `os.setpriority`. Elsewhere the plugin loads and does
 nothing.
@@ -123,10 +136,36 @@ The worker should appear at niceness `10` within a couple of seconds of starting
 serving process keeps its own value. The plugin also answers a read-only route:
 
 ```bash
-curl http://127.0.0.1:<dashboard port>/api/plugins/hermes-compute-priority/status
+# the deployment's session token, or a Bearer token from the auth flow
+curl -H "X-Hermes-Session-Token: $HERMES_DASHBOARD_SESSION_TOKEN" \
+  http://127.0.0.1:<dashboard port>/api/plugins/hermes-compute-priority/status
 ```
 
 which reports the target, the scan count, the workers reniced so far, and the last error if any.
+
+The route sits behind the dashboard's auth gate: nothing under `/api/plugins/` is on the public
+allowlist, so a credential-less request gets `401 {"error": "unauthenticated", "detail":
+"Unauthorized", ...}` from the gate and never reaches the plugin — a 401 therefore says nothing
+about whether the plugin loaded. `dashboard.basic_auth` is a *form* provider (the password is
+POSTed to `/auth/password-login`); there is no HTTP Basic, so `curl -u` with that username and
+password does not authenticate anything. The gate only reads `Authorization: Bearer <token>`, a
+session cookie, or `X-Hermes-Session-Token`, and on `/api/*` it always answers with the 401 JSON
+above — never a redirect.
+
+Two proofs need no credentials at all:
+
+```bash
+# one line per worker reniced, from the plugin's own file log. The dashboard process installs
+# file handlers only and runs uvicorn with log_config=None, so nothing of this reaches the journal.
+grep compute-priority /var/lib/hermes-agent/.hermes/logs/agent.log
+
+# the plugin's scan thread, inside the serving process. comm is truncated to 15 characters,
+# so "compute-priority" (16) shows up as "compute-priorit".
+grep -l compute-priorit /proc/$(systemctl show -p MainPID --value hermes-dashboard)/task/*/comm
+```
+
+If both are empty while turn isolation is on, check `hermes plugins list` first — a plugin that is
+installed but not enabled never has its backend imported.
 
 ## Disclosure
 
