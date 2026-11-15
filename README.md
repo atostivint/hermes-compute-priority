@@ -27,9 +27,10 @@ urgent than it already was.
 
 Every two seconds, in the Hermes process that loaded it:
 
-1. scans `/proc` for processes owned by the same user whose command line contains
-   `tui_gateway.compute_host` (how `tui_gateway/host_supervisor.py` spawns a turn worker);
-2. raises their niceness to `+10`, skipping any worker already at or below that value;
+1. finds processes owned by the same user whose command line contains
+   `tui_gateway.compute_host` (how `tui_gateway/host_supervisor.py` spawns a turn worker) — by
+   reading `/proc` on Linux, and by asking `psutil` on macOS and Windows;
+2. lowers their priority to `+10`, skipping any worker already at or below that value;
 3. logs one line per worker, once.
 
 It does nothing else. On a host where turn isolation is off, no worker of that shape exists, so the
@@ -65,8 +66,61 @@ without it Hermes skips the plugin silently and the status route below does not 
 `tests/test_dashboard_manifest.py` fails if the manifest disappears or if its `version` drifts
 from `plugin.yaml`'s.
 
-Linux only: the scan reads `/proc` and `os.setpriority`. Elsewhere the plugin loads and does
-nothing.
+The plugin works on Linux, macOS and Windows; see [Platforms](#platforms) for what each one does
+and for the `psutil` requirement on macOS and Windows.
+
+## Platforms
+
+One contract, three backends (`platform_backend.py`). The observable behaviour is the same
+everywhere: the turn workers of the current user are found by command line and lowered, once, with
+no privilege and never in the other direction.
+
+| Platform | Enumeration | Priority | Extra dependency |
+|---|---|---|---|
+| Linux | `/proc/<pid>/cmdline`, `st_uid` for ownership | `os.setpriority` (0–19 niceness) | none |
+| macOS | `psutil.Process.cmdline()` | `psutil.Process.nice(10)` (0–19 niceness) | `psutil` |
+| Windows | `psutil.Process.cmdline()` | `psutil.Process.nice(<priority class>)` | `psutil` |
+
+`psutil` is already a core hermes-agent dependency, so on those two platforms it is normally
+present. It stays **optional for this plugin**: with no `psutil` on macOS or Windows the plugin
+loads, enumerates nothing, changes nothing, and says so:
+
+```json
+{"ok": true, "enabled": false, "backend": "psutil-win32", "platform": "win32",
+ "available": false, "reason": "psutil is not installed, so processes cannot be enumerated on this platform; install it with `pip install psutil` …"}
+```
+
+`enabled: false` plus a `reason` is the whole point: a plugin that cannot see processes must not
+report a scan loop that is running fine.
+
+### Windows: niceness has no 0–19 scale
+
+On Windows `nice()` reads and writes a **priority class**, not a number between 0 and 19. The
+translation is an explicit table, not arithmetic, because it is a policy choice:
+
+| Target niceness | Windows priority class | Meaning |
+|---|---|---|
+| `15`–`19` | `IDLE_PRIORITY_CLASS` | the lowest class Windows offers |
+| `5`–`14` | `BELOW_NORMAL_PRIORITY_CLASS` | clearly behind the serving process |
+| `0`–`4` | *(no action)* | NORMAL is the floor the plugin is allowed to ask for |
+
+A target below `5` does nothing on purpose. The only classes left are `NORMAL_PRIORITY_CLASS` (the
+ordinary priority — i.e. no change at all) and classes *above* NORMAL, which would make a process
+more urgent than the default. This plugin only ever lowers a priority, so anything under 5 is
+refused rather than approximated; `/status` reports it in a `note` field when you configure such a
+target. The default of `10` lands on `BELOW_NORMAL_PRIORITY_CLASS`.
+
+Reading a class back for the idempotence check is coarse but safe: `IDLE` reads as `19`,
+`BELOW_NORMAL` as `10`, and anything at or above `NORMAL` as `0` — low enough that a worker which
+somehow outranks NORMAL still gets lowered, never raised. An unrecognised class is skipped.
+
+### Same user, on a platform without `uids()`
+
+`psutil.Process.uids()` is POSIX-only. Where it is missing, the candidate's
+`psutil.Process.username()` is compared with this process's own (case-insensitively on Windows,
+where account names are case-insensitive). A user name that cannot be read — or our own — means
+the candidate is **skipped**, not guessed at: not knowing who owns a process is not a licence to
+lower its priority.
 
 ## Settings
 
@@ -75,7 +129,7 @@ Environment, read once when the backend is imported:
 | Variable | Default | Meaning |
 |---|---|---|
 | `HERMES_COMPUTE_PRIORITY` | `1` | `0` disables the scan entirely |
-| `HERMES_COMPUTE_PRIORITY_NICE` | `10` | target niceness for workers (0–19; `19` is the lowest) |
+| `HERMES_COMPUTE_PRIORITY_NICE` | `10` | target priority for workers: niceness `0`–`19` (`19` is the lowest) on Linux and macOS, translated to a priority class on Windows (see [Platforms](#platforms); `5`–`14` = below normal, `15`–`19` = idle) |
 | `HERMES_COMPUTE_PRIORITY_INTERVAL_S` | `2.0` | seconds between scans |
 | `HERMES_COMPUTE_PRIORITY_RULES` | *(empty)* | opt-in extra process classes, see below |
 
@@ -97,7 +151,7 @@ Each rule is:
 |---|---|
 | `name` | a label, for the log line and the status route |
 | `match` | a **plain substring** of the command line, **at least 3 characters** — the only stable handle a plugin has, since it may not hook core code |
-| `nice` | target niceness, `0`–`19` |
+| `nice` | target niceness, `0`–`19` (on Windows: `5`–`14` = below normal, `15`–`19` = idle, below `5` = no action) |
 
 A `match` shorter than three characters is refused. `"a"` would hit most command lines on the
 machine, and a typo must not renice half the box.
@@ -128,12 +182,20 @@ Only the process that actually spawns a worker benefits: today that is the one s
 ## Verify it works
 
 ```bash
-# before a turn that uses an isolated session
+# before a turn that uses an isolated session  (Linux; on macOS: ps -o pid,ppid,ni,command -A)
 ps -o pid,ppid,ni,args -C python3 | grep compute_host
 ```
 
-The worker should appear at niceness `10` within a couple of seconds of starting, while the
-serving process keeps its own value. The plugin also answers a read-only route:
+```powershell
+# Windows: the class is what moves, not a 0-19 number
+Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" |
+  Where-Object { $_.CommandLine -like '*tui_gateway.compute_host*' } |
+  ForEach-Object { Get-Process -Id $_.ProcessId | Select-Object Id, PriorityClass }
+# -> BelowNormal by default (Idle for a target of 15 or more)
+```
+
+The worker should move within a couple of seconds of starting, while the serving process keeps its
+own value. The plugin also answers a read-only route:
 
 ```bash
 # the deployment's session token, or a Bearer token from the auth flow
@@ -141,7 +203,10 @@ curl -H "X-Hermes-Session-Token: $HERMES_DASHBOARD_SESSION_TOKEN" \
   http://127.0.0.1:<dashboard port>/api/plugins/hermes-compute-priority/status
 ```
 
-which reports the target, the scan count, the workers reniced so far, and the last error if any.
+which reports the target, the scan count, the workers deprioritised so far, the backend in use
+(`procfs`, `psutil-posix`, `psutil-win32`) and the last error if any. On a platform where the
+backend cannot run, it answers `{"enabled": false, "reason": …}` — read that field before assuming
+a plugin that loaded is a plugin that works.
 
 The route sits behind the dashboard's auth gate: nothing under `/api/plugins/` is on the public
 allowlist, so a credential-less request gets `401 {"error": "unauthenticated", "detail":
@@ -172,11 +237,12 @@ installed but not enabled never has its backend imported.
 Written the way the Hermes plugin catalog expects:
 
 - **Network:** none. The plugin opens no socket and contacts nothing.
-- **Files:** reads `/proc/<pid>/cmdline` and `/proc/<pid>/` ownership for processes of the same
-  user. Reads nothing in your home directory and writes no file.
-- **Processes:** calls `os.setpriority` on processes it has already matched **and** that belong to
-  the same user, only ever raising their niceness. It never signals, stops or kills anything, and
-  it skips its own pid.
+- **Files:** on Linux, reads `/proc/<pid>/cmdline` and `/proc/<pid>/` ownership for processes of
+  the same user. On macOS and Windows, enumeration goes through `psutil`, which reads process
+  metadata from the OS. Reads nothing in your home directory and writes no file.
+- **Processes:** lowers the priority of processes it has already matched **and** that belong to the
+  same user — `os.setpriority` on Linux and macOS, `SetPriorityClass` via `psutil` on Windows. It
+  never raises a priority, never signals, stops or kills anything, and it skips its own pid.
 - **Threads:** one daemon thread inside the Hermes process that loaded it, started at import and
   stopped when that process exits.
 - **Credentials:** none read, none stored.
@@ -184,19 +250,25 @@ Written the way the Hermes plugin catalog expects:
 
 ## Limitations, stated plainly
 
-- **Polling, not hooking.** The delay between a worker starting and being reniced is up to one
+- **Polling, not hooking.** The delay between a worker starting and being deprioritised is up to one
   interval. Hooking the spawn would be exact, but that is core code: a plugin may only use the
   published plugin API.
 - **Detection by command line.** If upstream renames the module, the match breaks — loudly in the
   status route (`applied_total` stops moving), silently otherwise.
 - **One process.** The plugin acts inside the process that loaded it. If your dashboard and gateway
   are separate units, install it on the one that spawns the workers.
+- **Windows granularity.** Three priority classes are coarse next to 20 niceness levels: a target of
+  `6` and one of `13` are the same `BELOW_NORMAL_PRIORITY_CLASS`. The direction is always right; the
+  step is wider.
+- **`psutil` on macOS and Windows.** Without it there is no enumeration, so the plugin stays idle
+  and reports why. Linux never needs it.
 
 ## The better fix, upstream
 
 `subprocess.Popen(..., preexec_fn=...)` or a `nice=` argument in
-`tui_gateway/host_supervisor.py` would make this exact, in one line, without a polling thread.
-This plugin exists because that line is not there yet.
+`tui_gateway/host_supervisor.py` would make this exact, in one line, without a polling thread (on
+Windows the same spawn takes `creationflags=` with a priority class). This plugin exists because
+that line is not there yet.
 
 ## License
 
