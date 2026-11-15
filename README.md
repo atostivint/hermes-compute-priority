@@ -66,6 +66,11 @@ without it Hermes skips the plugin silently and the status route below does not 
 `tests/test_dashboard_manifest.py` fails if the manifest disappears or if its `version` drifts
 from `plugin.yaml`'s.
 
+The root `__init__.py` exists only to satisfy the plugin loader's shape check — a directory plugin
+is "a `plugin.yaml` and an `__init__.py` exposing `register(ctx)`", and Hermes logs
+`Failed to load plugin 'hermes-compute-priority'` in `logs/errors.log` without it — and it
+registers nothing: the loop is started by the dashboard loader, never by this file.
+
 The plugin works on Linux, macOS and Windows; see [Platforms](#platforms) for what each one does
 and for the `psutil` requirement on macOS and Windows.
 
