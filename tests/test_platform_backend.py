@@ -155,6 +155,8 @@ def test_no_target_ever_maps_to_a_class_above_normal():
     assert produced == {None, pb.BELOW_NORMAL_PRIORITY_CLASS, pb.IDLE_PRIORITY_CLASS}
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"),
+                    reason="psutil only exposes the priority-class constants on Windows")
 def test_the_table_uses_psutil_s_own_constants():
     """The literals are readable without psutil; they must still equal the real thing."""
     psutil = pytest.importorskip("psutil")
