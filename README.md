@@ -83,8 +83,11 @@ Each rule is:
 | Field | Meaning |
 |---|---|
 | `name` | a label, for the log line and the status route |
-| `match` | a **plain substring** of the command line — the only stable handle a plugin has, since it may not hook core code |
+| `match` | a **plain substring** of the command line, **at least 3 characters** — the only stable handle a plugin has, since it may not hook core code |
 | `nice` | target niceness, `0`–`19` |
+
+A `match` shorter than three characters is refused. `"a"` would hit most command lines on the
+machine, and a typo must not renice half the box.
 
 Rules are evaluated **in order, and the first match wins**. A process already at or below its target
 is skipped, so a rule can never make anything more urgent — and a `nice` below `0` is rejected at

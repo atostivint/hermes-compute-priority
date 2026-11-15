@@ -150,7 +150,7 @@ def test_a_valid_rule_is_parsed():
 def test_rules_missing_a_name_or_a_match_are_dropped():
     rules = core.parse_rules(
         '[{"name": "", "match": "x", "nice": 5}, {"name": "y", "match": "", "nice": 5},'
-        ' {"name": "ok", "match": "z", "nice": 5}]'
+        ' {"name": "ok", "match": "zzz", "nice": 5}]'
     )
     assert [r.name for r in rules] == ["ok"]
 
@@ -177,22 +177,6 @@ def test_the_first_matching_rule_wins(tmp_path):
     assert [(pid, rule.name) for pid, rule in core.find_by_rules(rules, proc_root=tmp_path, uid=None)] == [(12, "first")]
 
 
-def test_each_rule_carries_its_own_niceness():
-    calls: list[tuple[int, int]] = []
-    rules = [
-        core.Rule(name="a", match="a", nice=5),
-        core.Rule(name="b", match="b", nice=15),
-    ]
-    applied = core.apply_once(
-        rules=rules,
-        scan=lambda: [],           # ignored when rules are given
-        nice_of=lambda pid: 0,
-        setter=lambda pid, nice: calls.append((pid, nice)) or True,
-    )
-    assert applied == []           # the fake scan returns nothing; see the next test
-    assert calls == []
-
-
 def test_rules_apply_their_own_niceness(tmp_path):
     _fake_proc(tmp_path, 20, "node mcp-server")
     _fake_proc(tmp_path, 21, "python3 -m hermes_cli.plugin_host_child")
@@ -209,3 +193,11 @@ def test_rules_apply_their_own_niceness(tmp_path):
     )
     assert sorted(calls) == [(20, 15), (21, 8)]
     assert {a.current for a in applied} == {8, 15}
+
+
+def test_a_too_short_match_is_refused():
+    # "a" matches most command lines on a machine: refusing short matches is what keeps a typo
+    # from renicing half the box. Found the hard way — a test using it reniced real processes.
+    assert core.parse_rules('[{"name": "x", "match": "a", "nice": 5}]') == []
+    assert core.parse_rules('[{"name": "x", "match": "ab", "nice": 5}]') == []
+    assert core.parse_rules('[{"name": "x", "match": "abc", "nice": 5}]') != []

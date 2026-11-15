@@ -57,6 +57,10 @@ COMPUTE_HOST_MARKERS: tuple[str, ...] = ("tui_gateway.compute_host",)
 MIN_RULE_NICE = 0
 MAX_RULE_NICE = 19
 
+#: A very short match matches almost any command line — ``"a"`` would hit most processes on the
+#: machine. Found the hard way: a test using it reniced real processes on a CI runner.
+MIN_RULE_MATCH_LEN = 3
+
 
 @dataclass(frozen=True)
 class Reniced:
@@ -112,6 +116,8 @@ def parse_rules(raw: str | None) -> list[Rule]:
         except (TypeError, ValueError):
             continue
         if not name or not match:
+            continue
+        if len(match) < MIN_RULE_MATCH_LEN:
             continue
         if not MIN_RULE_NICE <= nice <= MAX_RULE_NICE:
             continue
