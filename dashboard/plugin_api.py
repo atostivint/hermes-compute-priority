@@ -68,9 +68,10 @@ def _env_float(name: str, default: float) -> float:
 class WorkerNanny:
     """The loop. Named so the thread shows up in a stack dump as something recognisable."""
 
-    def __init__(self, *, target_nice: int, interval_s: float) -> None:
+    def __init__(self, *, target_nice: int, interval_s: float, rules=None) -> None:
         self.target_nice = target_nice
         self.interval_s = interval_s
+        self.rules = list(rules or [])
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -99,7 +100,11 @@ class WorkerNanny:
 
     # -- one pass --------------------------------------------------------------------------
     def tick(self) -> list[dict[str, object]]:
-        applied = core.apply_once(target_nice=self.target_nice, pid_exclude=os.getpid())
+        applied = core.apply_once(
+            target_nice=self.target_nice,
+            rules=self.rules or None,
+            pid_exclude=os.getpid(),
+        )
         with self._lock:
             self._scans += 1
             if applied:
@@ -127,16 +132,24 @@ class WorkerNanny:
                 "applied_total": self._applied_total,
                 "recent": list(self._recent),
                 "last_error": self._last_error,
+                "rules": [{"name": r.name, "match": r.match, "nice": r.nice} for r in self.rules],
             }
 
 
 _ENABLED = _env_bool("HERMES_COMPUTE_PRIORITY", _DEFAULT_ENABLED)
+
+# Opt-in extra classes of process. Empty unless the operator configures them: the shipped
+# behaviour is exactly one class (the turn worker), because a published plugin must not
+# deprioritise parts of someone else's Hermes without being asked.
+_RULES = core.parse_rules(os.environ.get("HERMES_COMPUTE_PRIORITY_RULES"))
+
 _NANNY: WorkerNanny | None = None
 
 if _ENABLED and hasattr(os, "getpriority"):
     _NANNY = WorkerNanny(
         target_nice=_env_int("HERMES_COMPUTE_PRIORITY_NICE", core.DEFAULT_TARGET_NICE),
         interval_s=_env_float("HERMES_COMPUTE_PRIORITY_INTERVAL_S", core.DEFAULT_INTERVAL_S),
+        rules=_RULES,
     )
     _NANNY.start()
 

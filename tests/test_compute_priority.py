@@ -126,3 +126,86 @@ def test_several_workers_are_all_reniced():
     )
     assert len(applied) == 3
     assert calls == [(11, 10), (12, 10), (13, 10)]
+
+# -- opt-in rules: off unless the operator asks for them -----------------------
+
+
+def test_no_rules_by_default():
+    assert core.parse_rules(None) == []
+    assert core.parse_rules("") == []
+    assert core.parse_rules("   ") == []
+
+
+def test_an_invalid_rule_list_is_ignored_not_raised():
+    assert core.parse_rules("not json") == []
+    assert core.parse_rules('{"name": "x"}') == []          # not a list
+    assert core.parse_rules('[1, 2, "a"]') == []
+
+
+def test_a_valid_rule_is_parsed():
+    rules = core.parse_rules('[{"name": "mcp", "match": "mcp-server", "nice": 15}]')
+    assert rules == [core.Rule(name="mcp", match="mcp-server", nice=15)]
+
+
+def test_rules_missing_a_name_or_a_match_are_dropped():
+    rules = core.parse_rules(
+        '[{"name": "", "match": "x", "nice": 5}, {"name": "y", "match": "", "nice": 5},'
+        ' {"name": "ok", "match": "z", "nice": 5}]'
+    )
+    assert [r.name for r in rules] == ["ok"]
+
+
+def test_a_rule_never_asks_for_a_higher_priority():
+    # Negative niceness would need a privilege this plugin does not want, and 20+ is out of range.
+    assert core.parse_rules('[{"name": "n", "match": "m", "nice": -5}]') == []
+    assert core.parse_rules('[{"name": "n", "match": "m", "nice": 20}]') == []
+
+
+def test_find_by_rules_matches_only_the_configured_class(tmp_path):
+    _fake_proc(tmp_path, 10, "python3 -m tui_gateway.compute_host")
+    _fake_proc(tmp_path, 11, "node mcp-server --stdio")
+    rules = [core.Rule(name="mcp", match="mcp-server", nice=15)]
+    assert [pid for pid, _ in core.find_by_rules(rules, proc_root=tmp_path, uid=None)] == [11]
+
+
+def test_the_first_matching_rule_wins(tmp_path):
+    _fake_proc(tmp_path, 12, "node mcp-server --marker")
+    rules = [
+        core.Rule(name="first", match="mcp-server", nice=5),
+        core.Rule(name="second", match="marker", nice=15),
+    ]
+    assert [(pid, rule.name) for pid, rule in core.find_by_rules(rules, proc_root=tmp_path, uid=None)] == [(12, "first")]
+
+
+def test_each_rule_carries_its_own_niceness():
+    calls: list[tuple[int, int]] = []
+    rules = [
+        core.Rule(name="a", match="a", nice=5),
+        core.Rule(name="b", match="b", nice=15),
+    ]
+    applied = core.apply_once(
+        rules=rules,
+        scan=lambda: [],           # ignored when rules are given
+        nice_of=lambda pid: 0,
+        setter=lambda pid, nice: calls.append((pid, nice)) or True,
+    )
+    assert applied == []           # the fake scan returns nothing; see the next test
+    assert calls == []
+
+
+def test_rules_apply_their_own_niceness(tmp_path):
+    _fake_proc(tmp_path, 20, "node mcp-server")
+    _fake_proc(tmp_path, 21, "python3 -m hermes_cli.plugin_host_child")
+    calls: list[tuple[int, int]] = []
+    rules = [
+        core.Rule(name="mcp", match="mcp-server", nice=15),
+        core.Rule(name="plugin-host", match="plugin_host_child", nice=8),
+    ]
+    applied = core.apply_once(
+        rules=rules,
+        proc_root=tmp_path,
+        nice_of=lambda pid: 0,
+        setter=lambda pid, nice: calls.append((pid, nice)) or True,
+    )
+    assert sorted(calls) == [(20, 15), (21, 8)]
+    assert {a.current for a in applied} == {8, 15}

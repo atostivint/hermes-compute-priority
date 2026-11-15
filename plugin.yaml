@@ -10,12 +10,13 @@
 name: hermes-compute-priority
 id: hermes-compute-priority
 kind: standalone
-version: 0.1.0
+version: 0.2.0
 requires_hermes: ">=0.22"
 description: >
   Raises the scheduling priority gap between the Hermes process that serves a connection and the
   child process that runs isolated agent turns: every `tui_gateway.compute_host` worker owned by
-  the same user is reniced to +10 within two seconds of appearing. Nothing else is touched, no
-  privilege is used (raising niceness of an owned process needs none), and the plugin is a no-op
-  on hosts where turn isolation is off.
+  the same user is reniced to +10 within two seconds of appearing. Opt-in extra rules can
+  deprioritise other process classes by command-line match, each with its own niceness; the list is
+  empty by default, so nothing else is touched unless asked. No privilege is used (raising the
+  niceness of an owned process needs none), and the plugin is a no-op where turn isolation is off.
 provides: []

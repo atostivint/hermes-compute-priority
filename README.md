@@ -64,6 +64,50 @@ Environment, read once when the backend is imported:
 | `HERMES_COMPUTE_PRIORITY` | `1` | `0` disables the scan entirely |
 | `HERMES_COMPUTE_PRIORITY_NICE` | `10` | target niceness for workers (0–19; `19` is the lowest) |
 | `HERMES_COMPUTE_PRIORITY_INTERVAL_S` | `2.0` | seconds between scans |
+| `HERMES_COMPUTE_PRIORITY_RULES` | *(empty)* | opt-in extra process classes, see below |
+
+## Extra rules — off by default
+
+The plugin knows exactly one class of process until you tell it about others. That is deliberate: a
+published plugin must not start deprioritising parts of someone else's Hermes without being asked.
+
+```bash
+HERMES_COMPUTE_PRIORITY_RULES='[
+  {"name": "mcp",         "match": "mcp-server",              "nice": 15},
+  {"name": "plugin-host", "match": "hermes_cli.plugin_host_child", "nice": 8}
+]'
+```
+
+Each rule is:
+
+| Field | Meaning |
+|---|---|
+| `name` | a label, for the log line and the status route |
+| `match` | a **plain substring** of the command line — the only stable handle a plugin has, since it may not hook core code |
+| `nice` | target niceness, `0`–`19` |
+
+Rules are evaluated **in order, and the first match wins**. A process already at or below its target
+is skipped, so a rule can never make anything more urgent — and a `nice` below `0` is rejected at
+parse time, because raising a priority needs a privilege this plugin does not want.
+
+Anything invalid in the list is dropped silently rather than raising: a typo in an optional feature
+must not take down the loop that protects the connection.
+
+### Per-process configuration
+
+The plugin runs **inside** each Hermes process, so "per process" is simply "per unit":
+
+```ini
+# hermes-dashboard.service.d/10-scheduling.conf
+Environment=HERMES_COMPUTE_PRIORITY_NICE=15
+
+# hermes-gateway.service.d/10-scheduling.conf
+Environment=HERMES_COMPUTE_PRIORITY_NICE=5
+```
+
+Only the process that actually spawns a worker benefits: today that is the one serving sessions
+(the dashboard). Configuring a unit that never isolates turns is harmless and inert.
+
 
 ## Verify it works
 

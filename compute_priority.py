@@ -15,20 +15,29 @@ Neither knob available in systemd does this on its own:
   processes, two generations, all at ``-5``.
 
 So the parent cannot outrank its own child through configuration. Raising the child's niceness
-after it starts can, and that is what this module does. Only *raising* nice is used: lowering a
-priority of a process we own needs no privilege, and it can never make anything more urgent than
-it was.
+after it starts can, and that is what this module does. Only *raising* nice is used: lowering the
+priority of a process we own needs no privilege, and it can never make anything more urgent than it
+was.
 
-Everything here is pure and injectable: ``find_compute_hosts`` reads ``/proc``, and ``apply_once``
-takes its scan and its setter as arguments, so tests never touch a real process.
+Two modes
+---------
+By default the plugin knows exactly one class of process: the turn worker. ``parse_rules`` adds
+opt-in classes (MCP servers, plugin hosts, anything the operator names), and each rule carries its
+own target niceness. The extra rules are empty unless the operator configures them — a published
+plugin must not start deprioritising parts of someone else's Hermes without being asked.
+
+Everything here is pure and injectable: ``find_compute_hosts`` and ``find_by_rules`` read
+``/proc``, and ``apply_once`` takes its scan and its setter as arguments, so tests never touch a
+real process.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 from dataclasses import dataclass
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
 #: Default niceness given to a turn worker. ``0`` is the ordinary priority and ``19`` the lowest;
 #: 10 leaves the worker clearly behind the serving process while still making progress.
@@ -43,14 +52,71 @@ DEFAULT_INTERVAL_S = 2.0
 #: so the module name is the stable part.
 COMPUTE_HOST_MARKERS: tuple[str, ...] = ("tui_gateway.compute_host",)
 
+#: Extra rules never ask for a *higher* priority. Renicing below zero needs a privilege this
+#: plugin does not want, and a published default must never try.
+MIN_RULE_NICE = 0
+MAX_RULE_NICE = 19
+
 
 @dataclass(frozen=True)
 class Reniced:
-    """One worker whose niceness was raised by this process."""
+    """One process whose niceness was raised by this process."""
 
     pid: int
     previous: int
     current: int
+
+
+@dataclass(frozen=True)
+class Rule:
+    """One opt-in class of process to deprioritise.
+
+    ``match`` is a plain substring of the command line, deliberately: the plugin may not hook
+    core code, so the command line is the only stable handle on what a process is.
+    """
+
+    name: str
+    match: str
+    nice: int
+
+
+def parse_rules(raw: str | None) -> list[Rule]:
+    """Parse the operator's JSON rule list. Anything invalid is dropped, never raised.
+
+    Expected shape::
+
+        [{"name": "mcp", "match": "mcp-server", "nice": 15}]
+
+    An empty or absent value returns an empty list, which is the shipped default: no extra class
+    of process is touched unless someone asks for it by name.
+    """
+    if not raw or not str(raw).strip():
+        return []
+
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+
+    if not isinstance(data, list):
+        return []
+
+    rules: list[Rule] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        match = str(item.get("match") or "").strip()
+        try:
+            nice = int(item.get("nice", DEFAULT_TARGET_NICE))
+        except (TypeError, ValueError):
+            continue
+        if not name or not match:
+            continue
+        if not MIN_RULE_NICE <= nice <= MAX_RULE_NICE:
+            continue
+        rules.append(Rule(name=name, match=match, nice=nice))
+    return rules
 
 
 def _read_cmdline(proc_root: str | pathlib.Path, pid: int) -> str:
@@ -66,6 +132,33 @@ def _read_cmdline(proc_root: str | pathlib.Path, pid: int) -> str:
     return raw.replace(b"\x00", b" ").decode("utf-8", "replace").strip()
 
 
+def _iter_pids(proc_root: str | pathlib.Path, uid: int | None) -> list[int]:
+    """Pids owned by ``uid`` (default: this user), skipping anything unreadable."""
+    root = pathlib.Path(proc_root)
+    if uid is None:
+        uid = os.getuid() if hasattr(os, "getuid") else None
+
+    pids: list[int] = []
+    try:
+        # `iterdir()` is a generator: a missing or unreadable root raises while iterating, not
+        # when it is called, so the listing has to be materialised inside the guard.
+        entries = list(root.iterdir())
+    except OSError:
+        return pids
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        if uid is not None:
+            try:
+                if entry.stat().st_uid != uid:
+                    continue
+            except OSError:
+                continue
+        pids.append(int(entry.name))
+    return pids
+
+
 def find_compute_hosts(
     proc_root: str | pathlib.Path = "/proc",
     uid: int | None = None,
@@ -74,35 +167,35 @@ def find_compute_hosts(
     """Pids of turn workers owned by ``uid`` (default: this user).
 
     Only same-user processes are returned, because that is exactly the set this process is
-    allowed to renice. Another user's worker stays untouched — with a minimal setup it is not
-    ours to slow down.
+    allowed to renice. Another user's worker stays untouched — with a minimal setup it is not ours
+    to slow down.
     """
-    root = pathlib.Path(proc_root)
-    if uid is None:
-        uid = os.getuid() if hasattr(os, "getuid") else None
-
     found: list[int] = []
-    try:
-        # `iterdir()` is a generator: a missing or unreadable root raises while iterating, not
-        # when it is called, so the listing has to be materialised inside the guard.
-        entries: list[pathlib.Path] = list(root.iterdir())
-    except OSError:
-        return found
-
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        pid = int(entry.name)
-        if uid is not None:
-            try:
-                if entry.stat().st_uid != uid:
-                    continue
-            except OSError:
-                continue
-        command = _read_cmdline(root, pid)
+    for pid in _iter_pids(proc_root, uid):
+        command = _read_cmdline(proc_root, pid)
         if command and any(marker in command for marker in markers):
             found.append(pid)
     return found
+
+
+def find_by_rules(
+    rules: Sequence[Rule],
+    proc_root: str | pathlib.Path = "/proc",
+    uid: int | None = None,
+) -> list[tuple[int, Rule]]:
+    """Pids matching an operator rule, first matching rule in declaration order wins."""
+    matches: list[tuple[int, Rule]] = []
+    if not rules:
+        return matches
+    for pid in _iter_pids(proc_root, uid):
+        command = _read_cmdline(proc_root, pid)
+        if not command:
+            continue
+        for rule in rules:
+            if rule.match in command:
+                matches.append((pid, rule))
+                break
+    return matches
 
 
 def current_nice(pid: int) -> int | None:
@@ -125,28 +218,37 @@ def set_nice(pid: int, target: int) -> bool:
 def apply_once(
     *,
     target_nice: int = DEFAULT_TARGET_NICE,
+    rules: Sequence[Rule] | None = None,
+    proc_root: str | pathlib.Path = "/proc",
     scan: Callable[[], list[int]] | None = None,
     nice_of: Callable[[int], int | None] = current_nice,
     setter: Callable[[int, int], bool] = set_nice,
     pid_exclude: int | None = None,
 ) -> list[Reniced]:
-    """Renice every worker that is still more urgent than ``target_nice``.
+    """Renice every matched process that is still more urgent than its target.
 
-    A worker already at or below the target is left alone: repeating the call is therefore free,
-    and the loop can run every couple of seconds without churning the scheduler. ``pid_exclude``
-    guards against ever touching this process.
+    With ``rules`` the scan looks for the operator's classes and each process gets its rule's
+    niceness; without them the built-in turn-worker scan applies ``target_nice``. A process
+    already at or below its target is left alone, so repeating the call is free and the loop can
+    run every couple of seconds without churning the scheduler. ``pid_exclude`` guards against
+    ever touching this process.
     """
-    if scan is None:
-        scan = find_compute_hosts
+    if rules:
+        targets: list[tuple[int, int]] = [
+            (pid, rule.nice) for pid, rule in find_by_rules(rules, proc_root=proc_root)
+        ]
+    else:
+        scanner = scan or (lambda: find_compute_hosts(proc_root=proc_root))
+        targets = [(pid, target_nice) for pid in scanner()]
 
     applied: list[Reniced] = []
-    for pid in scan():
+    for pid, target in targets:
         if pid_exclude is not None and pid == pid_exclude:
             continue
         previous = nice_of(pid)
-        if previous is None or previous >= target_nice:
+        if previous is None or previous >= target:
             continue
-        if not setter(pid, target_nice):
+        if not setter(pid, target):
             continue
-        applied.append(Reniced(pid=pid, previous=previous, current=target_nice))
+        applied.append(Reniced(pid=pid, previous=previous, current=target))
     return applied
