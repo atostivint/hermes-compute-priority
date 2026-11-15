@@ -1,0 +1,12 @@
+{
+  "name": "hermes-compute-priority",
+  "label": "Compute priority",
+  "description": "Keeps the process serving a Hermes connection ahead of the turn workers it spawns: raises each tui_gateway.compute_host worker's niceness to +10 within two seconds. Backend only — this plugin ships no dashboard tab.",
+  "icon": "Zap",
+  "version": "0.2.1",
+  "tab": {
+    "hidden": true
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}
