@@ -1,7 +1,6 @@
 # hermes-compute-priority
 
-A Hermes plugin that keeps the process serving your connection ahead of the processes running your
-agents.
+A Hermes plugin that keeps the process serving your connection ahead of the processes running your agents. It matters most on a CPU-constrained host, where a busy turn worker can starve the Desktop connection.
 
 ## The problem it solves
 

@@ -12,15 +12,10 @@ kind: standalone
 version: 0.3.2
 requires_hermes: ">=0.22"
 description: >
-  Raises the scheduling priority gap between the Hermes process that serves a connection and the
-  child process that runs isolated agent turns: every `tui_gateway.compute_host` worker owned by
-  the same user is deprioritised within two seconds of appearing. On Linux the scan reads `/proc`
-  and the priority is a niceness (+10 by default); on macOS and Windows the scan uses `psutil` and
-  Windows gets the equivalent priority class (BELOW_NORMAL for 5-14, IDLE for 15-19), with no
-  action below 5 since that is the ordinary priority. Opt-in extra rules can deprioritise other
-  process classes by command-line match, each with its own target; the list is empty by default, so
-  nothing else is touched unless asked. No privilege is used (lowering the priority of an owned
-  process needs none), nothing is ever made more urgent, and the plugin is a no-op where turn
-  isolation is off or where `psutil` is missing on macOS/Windows (the /status route says why).
+  Keeps the Hermes process that serves a connection ahead of the isolated turn
+  workers it spawns: every worker owned by the same user is deprioritised within
+  two seconds of appearing, using niceness +10 on Linux and macOS and
+  BELOW_NORMAL or IDLE on Windows. No privilege is used, nothing is made more
+  urgent, and the plugin is a no-op where turn isolation is off.
 license: MIT
 homepage: https://github.com/atostivint/hermes-compute-priority
