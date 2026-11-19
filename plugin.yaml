@@ -12,7 +12,7 @@ kind: standalone
 version: 0.3.2
 requires_hermes: ">=0.22"
 description: >
-  Raises the scheduling priority gap between the Hermes process that serves a connection and the
+  One of four small Hermes Agent tools for simple, affordable setups, born from an experiment with decision models. Raises the scheduling priority gap between the Hermes process that serves a connection and the
   child process that runs isolated agent turns: every `tui_gateway.compute_host` worker owned by
   the same user is deprioritised within two seconds of appearing. On Linux the scan reads `/proc`
   and the priority is a niceness (+10 by default); on macOS and Windows the scan uses `psutil` and
