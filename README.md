@@ -1,6 +1,6 @@
 # hermes-compute-priority
 
-One of four small Hermes Agent tools built to make daily use practical on simple, affordable setups. Compute Priority keeps the process serving your connection ahead of the processes running your agents, which matters most on a CPU-constrained host.
+A Hermes plugin that keeps the process serving your connection ahead of the processes running your agents. It matters most on a CPU-constrained host, where a busy turn worker can starve the Desktop connection.
 
 ## The problem it solves
 
